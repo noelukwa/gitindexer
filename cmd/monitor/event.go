@@ -2,17 +2,12 @@ package main
 
 import (
 	"encoding/json"
-	"time"
+
+	"github.com/noelukwa/indexer/internal/events"
 )
 
-type Event struct {
-	Repository string    `json:"repository"`
-	StartDate  time.Time `json:"start_date"`
-	EndDate    time.Time `json:"end_date"`
-}
-
-func parseEvent(data []byte) (*Event, error) {
-	var event Event
+func parseEvent(data []byte) (*events.NewIntent, error) {
+	var event events.NewIntent
 	err := json.Unmarshal(data, &event)
 	if err != nil {
 		return nil, err

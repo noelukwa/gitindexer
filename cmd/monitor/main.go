@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -16,7 +17,6 @@ import (
 	"github.com/noelukwa/indexer/internal/pkg/config"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
-	"golang.org/x/oauth2"
 )
 
 func main() {
@@ -69,7 +69,7 @@ func main() {
 	msgs, err := ch.Consume(
 		cq.Name,
 		"",
-		true,
+		false,
 		false,
 		false,
 		false,
@@ -79,33 +79,44 @@ func main() {
 		log.Fatalf("Failed to register a consumer: %v", err)
 	}
 
-	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: config.GitHubToken},
-	)
+	// ts := oauth2.StaticTokenSource(
+	// 	&oauth2.Token{AccessToken: config.GitHubToken},
+	// )
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	tc := oauth2.NewClient(ctx, ts)
-	ghClient := github.NewClient(tc)
+	// tc := oauth2.NewClient(ctx, ts)
+	hc := &http.Client{
+		Timeout: 10 * time.Second,
+	}
+	ghClient := github.NewClient(hc)
 
-	resolverChannel := make(chan *github.RepositoryCommit, 100)
+	resolverChannel := make(chan *github.RepositoryCommit)
 	go resolver(ch, config.RabbitMQPublishQueue, resolverChannel)
 
 	var wg sync.WaitGroup
 
-	for d := range msgs {
-		wg.Add(1)
-		go func(d amqp.Delivery) {
-			defer wg.Done()
-			handleMessage(ctx, ghClient, redisClient, resolverChannel, d.Body)
-		}(d)
-	}
+	// Start a goroutine to listen for messages continuously
+	go func() {
+		for d := range msgs {
+			log.Println("messaggggee!")
+			wg.Add(1)
+			go func(d amqp.Delivery) {
+				defer wg.Done()
+				handleMessage(ctx, ghClient, redisClient, resolverChannel, d.Body)
+			}(d)
+		}
+	}()
 
 	// Graceful shutdown
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	<-c
 
+	// Trigger shutdown
+	cancel()
+
+	// Close resolver channel and wait for all goroutines to complete
 	close(resolverChannel)
 	wg.Wait()
 
@@ -119,22 +130,25 @@ func handleMessage(ctx context.Context, client *github.Client, redisClient *redi
 		return
 	}
 
-	lockKey := fmt.Sprintf("lock:%s", event.Repository)
+	log.Printf("event: %v", event)
+
+	lockKey := fmt.Sprintf("lock:%s.%s", event.RepoOwner, event.RepoName)
 	ok, err := acquireLock(redisClient, lockKey, 10*time.Minute)
 	if err != nil || !ok {
-		log.Printf("Failed to acquire lock for %s: %v", event.Repository, err)
+		log.Printf("Failed to acquire lock for %s: %v", lockKey, err)
 		return
 	}
 	defer releaseLock(redisClient, lockKey)
 
 	var wg sync.WaitGroup
 	wg.Add(1)
-	go fetchCommits(ctx, client, resolverChannel, event.Repository, event.StartDate, event.EndDate, &wg)
+	go fetchCommits(ctx, client, resolverChannel, event, &wg)
 	wg.Wait()
 }
 
 func resolver(ch *amqp.Channel, publishQueue string, resolverChannel <-chan *github.RepositoryCommit) {
 	for commit := range resolverChannel {
+		log.Println(commit.SHA)
 		err := publishCommit(ch, publishQueue, commit)
 		if err != nil {
 			log.Printf("Error publishing commit: %v", err)

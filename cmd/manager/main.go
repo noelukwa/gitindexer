@@ -84,7 +84,7 @@ func main() {
 		log.Fatalf("Failed to establish DB connection: %v", err)
 	}
 
-	service := manager.NewService(dataStore)
+	service := manager.NewService(dataStore, &cfg)
 
 	e := echo.New()
 	handler := api.SetupRoutes(service, e)
@@ -95,7 +95,7 @@ func main() {
 	}
 
 	go func() {
-		log.Printf("server listening on %d\n", cfg.ServerPort)
+		log.Printf("server listening on %d", cfg.ServerPort)
 		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("HTTP server ListenAndServe: %v", err)
 		}
@@ -103,9 +103,15 @@ func main() {
 
 	go func() {
 		for d := range msgs {
-			if err := service.ProcessCommits(d.Body); err != nil {
+			if err := service.ProcessCommits(ctx, d.Body); err != nil {
 				log.Printf("Error processing commit: %v", err)
 			}
+		}
+	}()
+
+	go func() {
+		if err := service.StartBroadCast(ctx, ch); err != nil {
+			log.Printf("Error broadcasting: %v", err)
 		}
 	}()
 

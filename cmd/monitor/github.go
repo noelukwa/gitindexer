@@ -4,31 +4,33 @@ import (
 	"context"
 	"log"
 	"sync"
-	"time"
 
 	"github.com/google/go-github/v63/github"
-	"golang.org/x/oauth2"
+	"github.com/noelukwa/indexer/internal/events"
 )
 
-func fetchCommits(ctx context.Context, client *github.Client, resolverChannel chan<- *github.RepositoryCommit, repo string, startDate, endDate time.Time, wg *sync.WaitGroup) {
+func fetchCommits(ctx context.Context, client *github.Client, resolverChannel chan<- *github.RepositoryCommit, ev *events.NewIntent, wg *sync.WaitGroup) {
 	defer wg.Done()
-
+	log.Println("fetching commits")
 	opts := &github.CommitsListOptions{
-		Since: startDate,
-		Until: endDate,
+		Since: ev.From,
+		Until: ev.Until,
 		ListOptions: github.ListOptions{
 			PerPage: 100,
 		},
 	}
 
 	for {
-		commits, resp, err := client.Repositories.ListCommits(ctx, "owner", repo, opts)
+		log.Printf("fetching commits for %s/%s, from: %s to: %s", ev.RepoOwner, ev.RepoName, ev.From, ev.Until)
+		commits, resp, err := client.Repositories.ListCommits(ctx, ev.RepoOwner, ev.RepoName, opts)
 		if err != nil {
 			log.Printf("Error fetching commits: %v", err)
 			return
 		}
 
+		log.Printf("resp: %s", resp.Status)
 		for _, commit := range commits {
+			log.Println(commit.SHA)
 			resolverChannel <- commit
 		}
 
@@ -38,12 +40,4 @@ func fetchCommits(ctx context.Context, client *github.Client, resolverChannel ch
 
 		opts.Page = resp.NextPage
 	}
-}
-
-func createGitHubClient(token string) *github.Client {
-	ts := oauth2.StaticTokenSource(
-		&oauth2.Token{AccessToken: token},
-	)
-	tc := oauth2.NewClient(context.Background(), ts)
-	return github.NewClient(tc)
 }

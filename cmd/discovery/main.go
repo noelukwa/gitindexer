@@ -12,19 +12,14 @@ import (
 
 	_ "github.com/joho/godotenv/autoload"
 	"github.com/kelseyhightower/envconfig"
+	"github.com/noelukwa/indexer/internal/events"
 	"github.com/noelukwa/indexer/internal/pkg/config"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
 )
 
-type Event struct {
-	Repository string    `json:"repository"`
-	StartDate  time.Time `json:"start_date"`
-	EndDate    time.Time `json:"end_date"`
-}
-
-func parseEvent(data []byte) (*Event, error) {
-	var event Event
+func parseEvent(data []byte) (*events.NewIntent, error) {
+	var event events.NewIntent
 	err := json.Unmarshal(data, &event)
 	if err != nil {
 		return nil, err
@@ -32,8 +27,8 @@ func parseEvent(data []byte) (*Event, error) {
 	return &event, nil
 }
 
-func storeEvent(ctx context.Context, redisClient *redis.Client, event *Event) {
-	key := "event:" + event.Repository
+func storeEvent(ctx context.Context, redisClient *redis.Client, event *events.NewIntent) {
+	key := "event:" + event.RepoOwner + event.RepoName
 	existingEvent, err := redisClient.Get(ctx, key).Result()
 	if err == redis.Nil || isNewEventValid(existingEvent, event) {
 		eventData, _ := json.Marshal(event)
@@ -41,26 +36,26 @@ func storeEvent(ctx context.Context, redisClient *redis.Client, event *Event) {
 	}
 }
 
-func isNewEventValid(existingEventData string, newEvent *Event) bool {
+func isNewEventValid(existingEventData string, newEvent *events.NewIntent) bool {
 	if existingEventData == "" {
 		return true
 	}
 
-	var existingEvent Event
+	var existingEvent *events.NewIntent
 	err := json.Unmarshal([]byte(existingEventData), &existingEvent)
 	if err != nil {
 		return false
 	}
 
-	return !isOverlap(existingEvent.StartDate, existingEvent.EndDate, newEvent.StartDate, newEvent.EndDate)
+	return !isOverlap(existingEvent.From, existingEvent.Until, newEvent.From, newEvent.Until)
 }
 
 func isOverlap(start1, end1, start2, end2 time.Time) bool {
 	return start1.Before(end2) && start2.Before(end1)
 }
 
-func getAllEvents(ctx context.Context, redisClient *redis.Client) ([]*Event, error) {
-	var events []*Event
+func getAllEvents(ctx context.Context, redisClient *redis.Client) ([]*events.NewIntent, error) {
+	var found []*events.NewIntent
 
 	keys, err := redisClient.Keys(ctx, "event:*").Result()
 	if err != nil {
@@ -73,16 +68,16 @@ func getAllEvents(ctx context.Context, redisClient *redis.Client) ([]*Event, err
 			return nil, err
 		}
 
-		var event Event
+		event := events.NewIntent{}
 		err = json.Unmarshal([]byte(eventData), &event)
 		if err != nil {
 			return nil, err
 		}
 
-		events = append(events, &event)
+		found = append(found, &event)
 	}
 
-	return events, nil
+	return found, nil
 }
 
 func clearEvents(ctx context.Context, redisClient *redis.Client) {
@@ -92,7 +87,7 @@ func clearEvents(ctx context.Context, redisClient *redis.Client) {
 	}
 }
 
-func publishEvent(ctx context.Context, ch *amqp.Channel, queueName string, event *Event) error {
+func publishEvent(ctx context.Context, ch *amqp.Channel, queueName string, event *events.NewIntent) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return err
@@ -182,6 +177,7 @@ func main() {
 	ticker := time.NewTicker(config.BroadcastInterval)
 	go func() {
 		for range ticker.C {
+
 			broadcastEvents(ctx, ch, redisClient, config.RabbitMQPublishQueue)
 		}
 	}()
@@ -197,21 +193,27 @@ func main() {
 }
 
 func processMessage(ctx context.Context, redisClient *redis.Client, body []byte) {
+	log.Println("recieved message.")
 	event, err := parseEvent(body)
 	if err != nil {
 		log.Printf("Failed to parse event: %v", err)
 		return
 	}
 
+	log.Printf("recieved event: %v", event)
+
 	storeEvent(ctx, redisClient, event)
 }
 
 func broadcastEvents(ctx context.Context, ch *amqp.Channel, redisClient *redis.Client, publishQueue string) {
+	fmt.Println("tik....")
 	events, err := getAllEvents(ctx, redisClient)
 	if err != nil {
 		log.Printf("Failed to get all events: %v", err)
 		return
 	}
+
+	fmt.Println(events)
 
 	for _, event := range events {
 		err := publishEvent(ctx, ch, publishQueue, event)

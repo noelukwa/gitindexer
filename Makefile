@@ -16,7 +16,7 @@ ifndef GOOSE
 	@echo "goose is not installed. Installing..."
 	@go install github.com/pressly/goose/v3/cmd/goose@latest
 else
-	@echo goose is installed."
+	@echo "goose is installed."
 endif
 
 check-sqlc:
