@@ -8,12 +8,12 @@ RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o explorerd cmd/explorerd/main.go
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o discovery cmd/discovery/main.go
 
 FROM alpine:latest
 
-WORKDIR /root/explorerd
+WORKDIR /root/discovery
 
-COPY --from=builder /build/explorerd .
+COPY --from=builder /build/discovery .
 
-CMD ["./explorerd"]
+CMD ["./discovery"]

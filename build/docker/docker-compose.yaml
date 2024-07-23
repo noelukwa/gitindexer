@@ -25,9 +25,9 @@ services:
   postgres:
     image: postgres:latest
     environment:
-      POSTGRES_USER: explorer
+      POSTGRES_USER: indexer
       POSTGRES_PASSWORD: explorer2025
-      POSTGRES_DB: explorer
+      POSTGRES_DB: manager
     ports:
       - "5432:5432"
     networks:
