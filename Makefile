@@ -1,7 +1,7 @@
 GOOSE := $(shell command -v goose 2> /dev/null)
 SQLC := $(shell command -v sqlc 2> /dev/null)
 
-.PHONY: manager-migration manager-store-queries check-goose check-sqlc
+.PHONY: manager-migration manager-store-queries check-goose check-sqlc install_swag manager-docs build-all build-manager build-monitor build-discovery test
 
 manager-migration: check-goose
 	@read -p "enter migration name: " name; \
@@ -27,14 +27,22 @@ else
 	@echo "sqlc is installed"
 endif
 
-
 install_swag:
 	@command -v swag >/dev/null 2>&1 || { echo >&2 "swagger is not installed. Installing..."; go install github.com/swaggo/swag/cmd/swag@latest; }
 
 manager-docs: install_swag
-	swag init -g  cmd/manager/main.go -o docs/swagger -ot yaml	
+	swag init -g cmd/manager/main.go -o docs/swagger -ot yaml
 
+build-all: build-manager build-monitor build-discovery
 
+build-manager:
+	docker build -t manager:latest -f build/docker/manager/Dockerfile .
 
-manager-tests:
-	MANAGER_SERVICE_TEST_DATABASE_URL=
+build-monitor:
+	docker build -t monitor:latest -f build/docker/monitor/Dockerfile .
+
+build-discovery:
+	docker build -t discovery:latest -f build/docker/discovery/Dockerfile .
+
+test:
+	go test ./... -cover
