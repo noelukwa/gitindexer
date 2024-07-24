@@ -26,3 +26,10 @@ ifndef SQLC
 else
 	@echo "sqlc is installed"
 endif
+
+
+install_swag:
+	@command -v swag >/dev/null 2>&1 || { echo >&2 "swagger is not installed. Installing..."; go install github.com/swaggo/swag/cmd/swag@latest; }
+
+manager-docs: install_swag
+	swag init -g  cmd/manager/main.go -o docs/swagger -ot yaml	

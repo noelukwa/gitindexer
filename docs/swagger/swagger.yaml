@@ -1,0 +1,356 @@
+basePath: /v1
+definitions:
+  handlers.AddIntentRequest:
+    properties:
+      repository:
+        type: string
+      since:
+        type: string
+    required:
+    - repository
+    - since
+    type: object
+  handlers.ErrorResponse:
+    properties:
+      error:
+        type: string
+    type: object
+  handlers.PaginatedResponse:
+    properties:
+      data: {}
+      page:
+        type: integer
+      per_page:
+        type: integer
+      total_count:
+        type: integer
+    type: object
+  handlers.TopCommittersResponse:
+    properties:
+      data:
+        items:
+          $ref: '#/definitions/models.AuthorStats'
+        type: array
+      page:
+        type: integer
+      per_page:
+        type: integer
+      total_count:
+        type: integer
+    type: object
+  handlers.UpdateIntentRequest:
+    properties:
+      is_active:
+        type: boolean
+      since:
+        type: string
+    type: object
+  models.Author:
+    properties:
+      email:
+        type: string
+      id:
+        type: integer
+      name:
+        type: string
+      username:
+        type: string
+    type: object
+  models.AuthorStats:
+    properties:
+      author:
+        $ref: '#/definitions/models.Author'
+      commits:
+        type: integer
+    type: object
+  models.Intent:
+    properties:
+      end_date:
+        type: string
+      error:
+        $ref: '#/definitions/models.IntentError'
+      id:
+        type: string
+      is_active:
+        type: boolean
+      repository_name:
+        type: string
+      start_date:
+        type: string
+      status:
+        $ref: '#/definitions/models.IntentStatus'
+    type: object
+  models.IntentError:
+    properties:
+      created_at:
+        type: string
+      id:
+        type: string
+      intentID:
+        type: string
+      message:
+        type: string
+    type: object
+  models.IntentStatus:
+    enum:
+    - pending_broadcast
+    - success_broadcast
+    type: string
+    x-enum-varnames:
+    - PendingBroadCast
+    - SuccessBroadCast
+  models.Repository:
+    properties:
+      created_at:
+        type: string
+      forks:
+        type: integer
+      full_name:
+        type: string
+      id:
+        type: integer
+      language:
+        type: string
+      stargazers_count:
+        type: integer
+      updated_at:
+        type: string
+      watchers_count:
+        type: integer
+    type: object
+host: 127.0.0.1:8009
+info:
+  contact: {}
+  description: Manager Rest API server
+  license:
+    name: MIT License
+  title: Manager API
+  version: "1.0"
+paths:
+  /intents:
+    get:
+      consumes:
+      - application/json
+      description: Get a list of intents based on filter criteria
+      parameters:
+      - description: Filter by active status
+        in: query
+        name: is_active
+        type: boolean
+      - description: Filter by intent status
+        enum:
+        - pending
+        - active
+        - completed
+        - failed
+        in: query
+        name: status
+        type: string
+      - description: Filter by repository name
+        in: query
+        name: repository_name
+        type: string
+      - description: Page number
+        in: query
+        minimum: 1
+        name: page
+        required: true
+        type: integer
+      - description: Items per page
+        in: query
+        maximum: 100
+        minimum: 1
+        name: per_page
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.PaginatedResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Fetch multiple intents
+      tags:
+      - intents
+    post:
+      consumes:
+      - application/json
+      description: Create a new intent for a repository
+      parameters:
+      - description: Intent creation request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.AddIntentRequest'
+      produces:
+      - application/json
+      responses:
+        "201":
+          description: Created
+          schema:
+            $ref: '#/definitions/models.Intent'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Create a new intent
+      tags:
+      - intents
+  /intents/{id}:
+    get:
+      consumes:
+      - application/json
+      description: Get details of a specific intent by ID
+      parameters:
+      - description: Intent ID
+        in: path
+        name: id
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Intent'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Fetch a single intent
+      tags:
+      - intents
+    put:
+      consumes:
+      - application/json
+      description: Update the details of an existing intent
+      parameters:
+      - description: Intent ID
+        in: path
+        name: id
+        required: true
+        type: string
+      - description: Intent update request
+        in: body
+        name: request
+        required: true
+        schema:
+          $ref: '#/definitions/handlers.UpdateIntentRequest'
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Intent'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Update an existing intent
+      tags:
+      - intents
+  /repos/{owner}/{name}:
+    get:
+      consumes:
+      - application/json
+      description: Get detailed information about a specific repository
+      parameters:
+      - description: Repository owner
+        in: path
+        name: owner
+        required: true
+        type: string
+      - description: Repository name
+        in: path
+        name: name
+        required: true
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/models.Repository'
+        "404":
+          description: Not Found
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Fetch repository information
+      tags:
+      - repos
+  /repos/top-committers:
+    get:
+      consumes:
+      - application/json
+      description: Get a paginated list of top committers for a specified repository
+      parameters:
+      - description: Repository name in the format 'owner/repo'
+        in: query
+        name: repo
+        required: true
+        type: string
+      - description: Page number for pagination
+        in: query
+        minimum: 1
+        name: page
+        required: true
+        type: integer
+      - description: Number of items per page
+        in: query
+        maximum: 100
+        minimum: 1
+        name: per_page
+        required: true
+        type: integer
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/handlers.TopCommittersResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+        "500":
+          description: Internal Server Error
+          schema:
+            $ref: '#/definitions/handlers.ErrorResponse'
+      summary: Fetch the top committers in a repository
+      tags:
+      - repos
+swagger: "2.0"

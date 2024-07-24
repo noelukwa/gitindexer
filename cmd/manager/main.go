@@ -20,6 +20,13 @@ import (
 	amqp "github.com/rabbitmq/amqp091-go"
 )
 
+//	@title          Manager API
+//	@version        1.0
+//	@description    Manager Rest API server
+//	@license.name   MIT License
+//
+// @host       127.0.0.1:8009
+// @basePath   /v1
 func main() {
 	var cfg config.ManagerConfig
 	err := envconfig.Process("manager_service", &cfg)

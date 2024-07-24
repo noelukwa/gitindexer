@@ -28,7 +28,7 @@ func SetupRoutes(managerService *manager.Service, e *echo.Echo) *echo.Echo {
 	e.GET("/intents", intentHandler.FetchIntents)
 
 	remoteRepoHandler := handlers.NewRemoteRepositoryHandler(managerService)
-	e.GET("/repos/:name", remoteRepoHandler.FetchRepoInfo)
+	e.GET("/repos/:owner/:name", remoteRepoHandler.FetchRepoInfo)
 	e.GET("/repos/:name/committers", remoteRepoHandler.FetchTopCommitters)
 	return e
 }

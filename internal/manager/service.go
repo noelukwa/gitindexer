@@ -18,10 +18,11 @@ import (
 )
 
 var (
-	ErrInvalidRepository error = fmt.Errorf("invalid repository name: must be in <owner>/<repo> format")
-	ErrInvalidStartDate  error = fmt.Errorf("start date cannot be in the future")
-	ErrExistingIntent    error = fmt.Errorf("repository intent already exists")
-	ErrIntentNotFound    error = fmt.Errorf("repository intent not found")
+	ErrInvalidRepository  error = fmt.Errorf("invalid repository name: must be in <owner>/<repo> format")
+	ErrInvalidStartDate   error = fmt.Errorf("start date cannot be in the future")
+	ErrExistingIntent     error = fmt.Errorf("repository intent already exists")
+	ErrIntentNotFound     error = fmt.Errorf("repository intent not found")
+	ErrRepositoryNotFound error = fmt.Errorf("repository intent not found")
 )
 
 type Service struct {
@@ -183,22 +184,24 @@ func (svc *Service) BatchSaveCommits(ctx context.Context, commits []*models.Comm
 	})
 
 	currentRepoName := commits[0].Repository.FullName
-	currentRepoID := commits[0].Repository.ID
+
 	var currentRepoCommits []*models.Commit
 
 	for i, commit := range commits {
 		if commit.Repository.FullName != currentRepoName || i == len(commits)-1 {
-
 			if i == len(commits)-1 {
 				currentRepoCommits = append(currentRepoCommits, commit)
 			}
-			err := svc.store.SaveManyCommit(ctx, currentRepoID, currentRepoCommits)
+			repo, err := svc.store.GetRepo(ctx, commit.Repository.FullName)
+			if err != nil || repo == nil {
+				return fmt.Errorf("failed to find repository %s: %w", currentRepoName, err)
+			}
+
+			err = svc.store.SaveManyCommit(ctx, repo.ID, currentRepoCommits)
 			if err != nil {
 				return fmt.Errorf("failed to save commits for repository %s: %w", currentRepoName, err)
 			}
-
 			currentRepoName = commit.Repository.FullName
-			currentRepoID = commit.Repository.ID
 			currentRepoCommits = []*models.Commit{commit}
 		} else {
 			currentRepoCommits = append(currentRepoCommits, commit)
