@@ -21,18 +21,19 @@ var (
 	ErrInvalidRepository error = fmt.Errorf("invalid repository name: must be in <owner>/<repo> format")
 	ErrInvalidStartDate  error = fmt.Errorf("start date cannot be in the future")
 	ErrExistingIntent    error = fmt.Errorf("repository intent already exists")
+	ErrIntentNotFound    error = fmt.Errorf("repository intent not found")
 )
 
 type Service struct {
 	store       repository.ManagerStore
-	intentsChan chan *models.Intent
+	intentsChan chan *events.IntentCommand
 	cfg         *config.ManagerConfig
 }
 
 func NewService(store repository.ManagerStore, cfg *config.ManagerConfig) *Service {
 	return &Service{
 		store:       store,
-		intentsChan: make(chan *models.Intent),
+		intentsChan: make(chan *events.IntentCommand),
 		cfg:         cfg,
 	}
 }
@@ -63,16 +64,74 @@ func (svc *Service) CreateIntent(ctx context.Context, repoName string, startDate
 		return nil, err
 	}
 
-	svc.intentsChan <- intent
+	svc.intentsChan <- events.NewIntentCommand(events.NewIntentKind, &events.IntentPayload{
+		ID:        intent.ID,
+		RepoOwner: strings.Split(repoName, "/")[0],
+		RepoName:  strings.Split(repoName, "/")[1],
+		From:      intent.StartDate,
+	})
 	return intent, nil
 }
 
-func (svc *Service) UpdateIntentStatus(ctx context.Context, id uuid.UUID, status bool) error {
+func (svc *Service) UpdateIntentStatus(ctx context.Context, id uuid.UUID) (*models.Intent, error) {
+	intent, err := svc.store.FindIntent(ctx, id)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find intent: %w", err)
+	}
 
-	return nil
+	if intent == nil {
+		return nil, ErrIntentNotFound
+	}
+
+	newStatus := !intent.IsActive
+
+	update, err := svc.store.UpdateIntent(ctx, models.IntentUpdate{
+		ID:       id,
+		IsActive: &newStatus,
+	})
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to update intent: %w", err)
+	}
+
+	var eventKind events.IntentKind
+	if intent.IsActive && !newStatus {
+		eventKind = events.CancelIntentKind
+	} else if !intent.IsActive && newStatus {
+		eventKind = events.NewIntentKind
+	} else {
+		eventKind = events.UpdateIntentKind
+	}
+
+	svc.intentsChan <- events.NewIntentCommand(eventKind, &events.IntentPayload{
+		ID:        update.ID,
+		RepoOwner: strings.Split(update.RepositoryName, "/")[0],
+		RepoName:  strings.Split(update.RepositoryName, "/")[1],
+		From:      update.StartDate,
+	})
+
+	return update, nil
 }
 
 func (svc *Service) ResetIntentStartDate(ctx context.Context, id uuid.UUID, newDate time.Time) error {
+	if err := validateStartDate(newDate); err != nil {
+		return err
+	}
+
+	intent, err := svc.store.UpdateIntent(ctx, models.IntentUpdate{
+		ID:        id,
+		StartDate: &newDate,
+	})
+	if err != nil {
+		return err
+	}
+
+	svc.intentsChan <- events.NewIntentCommand(events.UpdateIntentKind, &events.IntentPayload{
+		ID:        intent.ID,
+		RepoOwner: strings.Split(intent.RepositoryName, "/")[0],
+		RepoName:  strings.Split(intent.RepositoryName, "/")[1],
+		From:      intent.StartDate,
+	})
 
 	return nil
 }
@@ -91,65 +150,66 @@ func (svc *Service) GetIntents(ctx context.Context, filter models.IntentFilter, 
 	return svc.store.FindIntents(ctx, filter, pagination)
 }
 
-func (svc *Service) BatchSaveCommits(ctx context.Context, repoName string, commits []models.Commit) error {
-
-	repository, err := svc.store.GetRepo(ctx, repoName)
-	if err != nil || repository == nil {
-		return err
+func (svc *Service) GetTopCommitters(ctx context.Context, repoName string, page, perPage int) (repository.Paginated[models.AuthorStats], error) {
+	_, err := svc.store.GetRepo(ctx, repoName)
+	if err != nil {
+		return repository.Paginated[models.AuthorStats]{}, fmt.Errorf("failed to get repository: %w", err)
 	}
-	return svc.store.SaveManyCommit(ctx, repository.ID, commits)
+
+	pagination := repository.Pagination{
+		Page:    page,
+		PerPage: perPage,
+	}
+
+	topCommitters, err := svc.store.GetTopCommitters(ctx, repoName, nil, nil, pagination)
+	if err != nil {
+		return repository.Paginated[models.AuthorStats]{}, fmt.Errorf("failed to get top committers: %w", err)
+	}
+
+	if topCommitters.Data == nil {
+		topCommitters.Data = []models.AuthorStats{}
+	}
+
+	return topCommitters, nil
+}
+
+func (svc *Service) BatchSaveCommits(ctx context.Context, commits []*models.Commit) error {
+	if len(commits) == 0 {
+		return nil
+	}
+
+	sort.Slice(commits, func(i, j int) bool {
+		return commits[i].Repository.FullName < commits[j].Repository.FullName
+	})
+
+	currentRepoName := commits[0].Repository.FullName
+	currentRepoID := commits[0].Repository.ID
+	var currentRepoCommits []*models.Commit
+
+	for i, commit := range commits {
+		if commit.Repository.FullName != currentRepoName || i == len(commits)-1 {
+
+			if i == len(commits)-1 {
+				currentRepoCommits = append(currentRepoCommits, commit)
+			}
+			err := svc.store.SaveManyCommit(ctx, currentRepoID, currentRepoCommits)
+			if err != nil {
+				return fmt.Errorf("failed to save commits for repository %s: %w", currentRepoName, err)
+			}
+
+			currentRepoName = commit.Repository.FullName
+			currentRepoID = commit.Repository.ID
+			currentRepoCommits = []*models.Commit{commit}
+		} else {
+			currentRepoCommits = append(currentRepoCommits, commit)
+		}
+	}
+
+	return nil
 }
 
 func (svc *Service) FindRepository(ctx context.Context, repoName string) (*models.Repository, error) {
 	return svc.store.GetRepo(ctx, repoName)
-}
-
-func (svc *Service) GetTopCommitters(ctx context.Context, repoName string, limit int) ([]models.AuthorStats, error) {
-
-	_, err := svc.store.GetRepo(ctx, repoName)
-	if err != nil {
-		return nil, err
-	}
-
-	filter := models.CommitsFilter{
-		RepositoryName: repoName,
-	}
-
-	pagination := repository.Pagination{
-		Page:    1,
-		PerPage: 1000,
-	}
-
-	commitsResp, err := svc.store.FindCommits(ctx, filter, pagination)
-	if err != nil {
-		return nil, err
-	}
-
-	authorCommits := make(map[int64]int)
-	authorMap := make(map[int64]models.Author)
-
-	for _, commit := range commitsResp.Data {
-		authorCommits[commit.Author.ID]++
-		authorMap[commit.Author.ID] = commit.Author
-	}
-
-	var topCommitters []models.AuthorStats
-	for authorID, count := range authorCommits {
-		topCommitters = append(topCommitters, models.AuthorStats{
-			Author:  authorMap[authorID],
-			Commits: int64(count),
-		})
-	}
-
-	sort.Slice(topCommitters, func(i, j int) bool {
-		return topCommitters[i].Commits > topCommitters[j].Commits
-	})
-
-	if limit > len(topCommitters) {
-		limit = len(topCommitters)
-	}
-
-	return topCommitters[:limit], nil
 }
 
 func (svc *Service) GetCommits(ctx context.Context, repo string, startDate, endDate time.Time, page, perPage int) (models.CommitPage, error) {
@@ -182,7 +242,36 @@ func (svc *Service) GetCommits(ctx context.Context, repo string, startDate, endD
 	}, nil
 }
 
-func (svc *Service) ProcessCommits(ctx context.Context, body []byte) error {
+func (svc *Service) ProcessCommitCommands(ctx context.Context, body []byte) error {
+	var command events.CommitsCommand
+	err := json.Unmarshal(body, &command)
+	if err != nil {
+		return fmt.Errorf("failed to unmarshal commit command: %w", err)
+	}
+
+	switch command.Kind {
+	case events.NewRepoInfoKind:
+		if command.Payload.Repo == nil {
+			return fmt.Errorf("repo info is missing in the payload")
+		}
+		err = svc.store.SaveRepo(ctx, command.Payload.Repo)
+		if err != nil {
+			return fmt.Errorf("failed to save repo: %w", err)
+		}
+
+	case events.NewCommitsKind:
+		if len(command.Payload.Commits) == 0 {
+			return fmt.Errorf("commits are missing in the payload")
+		}
+		err = svc.BatchSaveCommits(ctx, command.Payload.Commits)
+		if err != nil {
+			return fmt.Errorf("failed to save commits: %w", err)
+		}
+
+	default:
+		return fmt.Errorf("unknown commit command kind: %s", command.Kind)
+	}
+
 	return nil
 }
 
@@ -194,20 +283,7 @@ func (svc *Service) StartBroadCast(ctx context.Context, ch *amqp.Channel) error 
 				return nil
 			}
 
-			id, err := uuid.NewRandom()
-			if err != nil {
-				return err
-			}
-			parts := strings.Split(v.RepositoryName, "/")
-
-			// make this and IntentCommand
-			body, err := json.Marshal(events.IntentPayload{
-				RepoOwner: parts[0],
-				RepoName:  parts[1],
-				Until:     v.Until,
-				From:      v.StartDate,
-				ID:        id,
-			})
+			body, err := json.Marshal(v)
 			if err != nil {
 				log.Printf("failed to marshal intent: %v", err)
 				continue
@@ -229,7 +305,7 @@ func (svc *Service) StartBroadCast(ctx context.Context, ch *amqp.Channel) error 
 
 			newStatus := models.SuccessBroadCast
 			_, err = svc.store.UpdateIntent(ctx, models.IntentUpdate{
-				ID:     v.ID,
+				ID:     v.Intent.ID,
 				Status: &newStatus,
 			})
 			if err != nil {

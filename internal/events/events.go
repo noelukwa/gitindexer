@@ -28,7 +28,6 @@ type IntentPayload struct {
 	RepoOwner string    `json:"repo_owner"`
 	RepoName  string    `json:"repo_name"`
 	From      time.Time `json:"from"`
-	Until     time.Time `json:"until"`
 	ID        uuid.UUID `json:"id"`
 }
 
@@ -43,4 +42,11 @@ const (
 type IntentCommand struct {
 	Kind   IntentKind     `json:"kind"`
 	Intent *IntentPayload `json:"payload"`
+}
+
+func NewIntentCommand(kind IntentKind, payload *IntentPayload) *IntentCommand {
+	return &IntentCommand{
+		Kind:   kind,
+		Intent: payload,
+	}
 }

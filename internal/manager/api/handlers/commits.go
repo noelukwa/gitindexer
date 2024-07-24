@@ -1,8 +1,8 @@
 package handlers
 
 import (
+	"fmt"
 	"net/http"
-	"strconv"
 
 	"github.com/go-playground/validator/v10"
 	"github.com/labstack/echo/v4"
@@ -21,19 +21,27 @@ func NewRemoteRepositoryHandler(service *manager.Service) *RemoteHandler {
 	}
 }
 
+type TopCommittersRequest struct {
+	Repo    string `query:"repo" validate:"required"`
+	Page    int    `query:"page" validate:"required,min=1"`
+	PerPage int    `query:"per_page" validate:"required,min=1,max=100"`
+}
+
 func (h *RemoteHandler) FetchTopCommitters(c echo.Context) error {
-	limitStr := c.QueryParam("limit")
-	repo := c.QueryParam("repo")
-
-	limit, err := strconv.Atoi(limitStr)
-	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid limit parameter"})
+	var req TopCommittersRequest
+	if err := c.Bind(&req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid request parameters"})
 	}
 
-	committers, err := h.service.GetTopCommitters(c.Request().Context(), repo, limit)
-	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "failed to get top committers"})
+	if err := h.validator.Struct(req); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
+
+	committers, err := h.service.GetTopCommitters(c.Request().Context(), req.Repo, req.Page, req.PerPage)
+	if err != nil {
+		return c.JSON(http.StatusInternalServerError, map[string]string{"error": fmt.Sprintf("failed to get top committers: %v", err)})
+	}
+
 	return c.JSON(http.StatusOK, committers)
 }
 

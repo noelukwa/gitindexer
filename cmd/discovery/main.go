@@ -64,7 +64,6 @@ func updateIntent(ctx context.Context, redisClient *redis.Client, key string, up
 	}
 
 	existingIntent.From = updatedIntent.From
-	existingIntent.Until = updatedIntent.Until
 
 	return storeNewIntent(ctx, redisClient, key, &existingIntent)
 }

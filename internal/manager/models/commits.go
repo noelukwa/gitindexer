@@ -6,14 +6,14 @@ import (
 )
 
 type Repository struct {
-	Watchers   int32     `json:"watchers_count"`
-	StarGazers int32     `json:"stargazers_count"`
-	FullName   string    `json:"full_name"`
-	ID         int64     `json:"id"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	Language   string    `json:"language"`
-	Forks      int32     `json:"forks"`
+	Watchers  int32     `json:"watchers_count"`
+	Stars     int32     `json:"stargazers_count"`
+	FullName  string    `json:"full_name"`
+	ID        int64     `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Language  string    `json:"language"`
+	Forks     int32     `json:"forks"`
 }
 
 type Commit struct {

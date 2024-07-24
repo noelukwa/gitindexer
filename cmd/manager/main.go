@@ -103,7 +103,7 @@ func main() {
 
 	go func() {
 		for d := range msgs {
-			if err := service.ProcessCommits(ctx, d.Body); err != nil {
+			if err := service.ProcessCommitCommands(ctx, d.Body); err != nil {
 				log.Printf("Error processing commit: %v", err)
 			}
 		}

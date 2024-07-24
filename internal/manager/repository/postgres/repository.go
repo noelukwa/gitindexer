@@ -239,7 +239,7 @@ func (p *pgStore) FindIntent(ctx context.Context, id uuid.UUID) (*models.Intent,
 	}, nil
 }
 
-func (p *pgStore) SaveManyCommit(ctx context.Context, repoID int64, commits []models.Commit) error {
+func (p *pgStore) SaveManyCommit(ctx context.Context, repoID int64, commits []*models.Commit) error {
 	tx, err := p.conn.Begin(ctx)
 	if err != nil {
 		return err
@@ -295,7 +295,7 @@ func (p *pgStore) SaveRepo(ctx context.Context, repo *models.Repository) error {
 	return p.q.SaveRepo(ctx, sqlc.SaveRepoParams{
 		ID:         repo.ID,
 		Watchers:   int32(repo.Watchers),
-		Stargazers: int32(repo.StarGazers),
+		Stargazers: int32(repo.Stars),
 		FullName:   repo.FullName,
 		CreatedAt:  createdAt,
 		UpdatedAt:  updatedAt,
@@ -311,14 +311,14 @@ func (p *pgStore) GetRepo(ctx context.Context, name string) (*models.Repository,
 	}
 
 	return &models.Repository{
-		ID:         repo.ID,
-		Watchers:   repo.Watchers,
-		StarGazers: repo.Stargazers,
-		FullName:   repo.FullName,
-		CreatedAt:  repo.CreatedAt.Time,
-		UpdatedAt:  repo.UpdatedAt.Time,
-		Language:   repo.Language.String,
-		Forks:      repo.Forks,
+		ID:        repo.ID,
+		Watchers:  repo.Watchers,
+		Stars:     repo.Stargazers,
+		FullName:  repo.FullName,
+		CreatedAt: repo.CreatedAt.Time,
+		UpdatedAt: repo.UpdatedAt.Time,
+		Language:  repo.Language.String,
+		Forks:     repo.Forks,
 	}, nil
 }
 
@@ -357,14 +357,14 @@ func (p *pgStore) FindCommits(ctx context.Context, filter models.CommitsFilter, 
 			Url:       parseURL(row.Url),
 			CreatedAt: row.CreatedAt.Time,
 			Repository: models.Repository{
-				ID:         row.RepoID,
-				Watchers:   row.Watchers,
-				StarGazers: row.Stargazers,
-				FullName:   row.Repository,
-				CreatedAt:  row.RepoCreatedAt.Time,
-				UpdatedAt:  row.RepoUpdatedAt.Time,
-				Language:   row.Language.String,
-				Forks:      row.Forks,
+				ID:        row.RepoID,
+				Watchers:  row.Watchers,
+				Stars:     row.Stargazers,
+				FullName:  row.Repository,
+				CreatedAt: row.RepoCreatedAt.Time,
+				UpdatedAt: row.RepoUpdatedAt.Time,
+				Language:  row.Language.String,
+				Forks:     row.Forks,
 			},
 			Author: models.Author{
 				ID:       row.AuthorID,
