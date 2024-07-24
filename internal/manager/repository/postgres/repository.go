@@ -251,7 +251,7 @@ func (p *pgStore) SaveManyCommit(ctx context.Context, repoID int64, commits []*m
 	for _, commit := range commits {
 		author, err := qtx.GetAuthor(ctx, commit.Author.ID)
 		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			continue
+			return fmt.Errorf("failed to get author %d: %w", commit.Author.ID, err)
 		}
 
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -322,77 +322,6 @@ func (p *pgStore) GetRepo(ctx context.Context, name string) (*models.Repository,
 	}, nil
 }
 
-func (p *pgStore) FindCommits(ctx context.Context, filter models.CommitsFilter, pagination repository.Pagination) (repository.Paginated[models.Commit], error) {
-	var startDate, endDate pgtype.Timestamptz
-
-	// Set startDate if filter.StartDate is provided and not zero
-	if filter.StartDate != nil && !filter.StartDate.IsZero() {
-		startDate.Time = *filter.StartDate
-		startDate.Valid = true
-	}
-
-	// Set endDate if filter.EndDate is provided and not zero
-	if filter.EndDate != nil && !filter.EndDate.IsZero() {
-		endDate.Time = *filter.EndDate
-		endDate.Valid = true
-	}
-
-	// Execute the FindCommits query
-	rows, err := p.q.FindCommits(ctx, sqlc.FindCommitsParams{
-		FullName: filter.RepositoryName,
-		Column2:  startDate,
-		Column3:  endDate,
-		Limit:    int32(pagination.PerPage),
-		Offset:   int32((pagination.Page - 1) * pagination.PerPage),
-	})
-	if err != nil {
-		return repository.Paginated[models.Commit]{}, err
-	}
-
-	var commits []models.Commit
-	for _, row := range rows {
-		commits = append(commits, models.Commit{
-			Hash:      row.Hash,
-			Message:   row.Message,
-			Url:       parseURL(row.Url),
-			CreatedAt: row.CreatedAt.Time,
-			Repository: models.Repository{
-				ID:        row.RepoID,
-				Watchers:  row.Watchers,
-				Stars:     row.Stargazers,
-				FullName:  row.Repository,
-				CreatedAt: row.RepoCreatedAt.Time,
-				UpdatedAt: row.RepoUpdatedAt.Time,
-				Language:  row.Language.String,
-				Forks:     row.Forks,
-			},
-			Author: models.Author{
-				ID:       row.AuthorID,
-				Name:     row.AuthorName,
-				Email:    row.AuthorEmail,
-				Username: row.AuthorUsername,
-			},
-		})
-	}
-
-	// Get the total count of commits matching the filter
-	totalCount, err := p.q.CountCommits(ctx, sqlc.CountCommitsParams{
-		FullName: filter.RepositoryName,
-		Column2:  startDate,
-		Column3:  endDate,
-	})
-	if err != nil {
-		return repository.Paginated[models.Commit]{}, err
-	}
-
-	return repository.Paginated[models.Commit]{
-		Data:       commits,
-		TotalCount: totalCount,
-		Page:       pagination.Page,
-		PerPage:    pagination.PerPage,
-	}, nil
-}
-
 func (p *pgStore) GetTopCommitters(ctx context.Context, repo string, startDate, endDate *time.Time, pagination repository.Pagination) (repository.Paginated[models.AuthorStats], error) {
 	var start, end pgtype.Timestamptz
 	if startDate != nil {
@@ -435,7 +364,8 @@ func (p *pgStore) GetTopCommitters(ctx context.Context, repo string, startDate, 
 		PerPage:    pagination.PerPage,
 	}, nil
 }
-func (p *pgStore) SaveAuthor(ctx context.Context, author models.Author) error {
+
+func (p *pgStore) SaveAuthor(ctx context.Context, author *models.Author) error {
 	_, err := p.q.SaveAuthor(ctx, sqlc.SaveAuthorParams{
 		ID:       author.ID,
 		Name:     author.Name,
@@ -445,18 +375,110 @@ func (p *pgStore) SaveAuthor(ctx context.Context, author models.Author) error {
 	return err
 }
 
-func stringOrNull(str *string) string {
-	if str == nil {
-		return ""
-	}
-	return *str
-}
+func (p *pgStore) FindCommits(ctx context.Context, filter models.CommitsFilter, pagination repository.Pagination) (repository.Paginated[models.Commit], error) {
+	var commits []models.Commit
 
-func parseURL(rawURL pgtype.Text) *url.URL {
+	query := squirrel.Select(
+		"c.hash", "c.message", "c.url", "c.created_at",
+		"a.id AS author_id", "a.name AS author_name", "a.email AS author_email", "a.username AS author_username",
+		"r.id AS repo_id", "r.watchers", "r.stargazers", "r.full_name AS repository",
+		"r.created_at AS repo_created_at", "r.updated_at AS repo_updated_at", "r.language", "r.forks",
+	).
+		From("commits c").
+		Join("repositories r ON c.repository_id = r.id").
+		Join("authors a ON c.author_id = a.id").
+		Where(squirrel.Eq{"r.full_name": filter.RepositoryName}).
+		OrderBy("c.created_at DESC").
+		Limit(uint64(pagination.PerPage)).
+		Offset(uint64((pagination.Page - 1) * pagination.PerPage))
 
-	if rawURL.Valid {
-		u, _ := url.Parse(rawURL.String)
-		return u
+	if filter.StartDate != nil && !filter.StartDate.IsZero() {
+		query = query.Where(squirrel.GtOrEq{"c.created_at": *filter.StartDate})
 	}
-	return nil
+
+	if filter.EndDate != nil && !filter.EndDate.IsZero() {
+		query = query.Where(squirrel.LtOrEq{"c.created_at": *filter.EndDate})
+	}
+
+	if filter.AuthorUsername != nil && *filter.AuthorUsername != "" {
+		query = query.Where(squirrel.Eq{"a.username": *filter.AuthorUsername})
+	}
+
+	sql, args, err := query.PlaceholderFormat(squirrel.Dollar).ToSql()
+	if err != nil {
+		return repository.Paginated[models.Commit]{}, err
+	}
+
+	rows, err := p.conn.Query(ctx, sql, args...)
+	if err != nil {
+		return repository.Paginated[models.Commit]{}, err
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var commit models.Commit
+		var urlStr pgtype.Text
+		var repoCreatedAt, repoUpdatedAt, commitCreatedAt pgtype.Timestamptz
+		var language pgtype.Text
+
+		err := rows.Scan(
+			&commit.Hash, &commit.Message, &urlStr, &commitCreatedAt,
+			&commit.Author.ID, &commit.Author.Name, &commit.Author.Email, &commit.Author.Username,
+			&commit.Repository.ID, &commit.Repository.Watchers, &commit.Repository.Stars, &commit.Repository.FullName,
+			&repoCreatedAt, &repoUpdatedAt, &language, &commit.Repository.Forks,
+		)
+		if err != nil {
+			return repository.Paginated[models.Commit]{}, err
+		}
+
+		if urlStr.Valid {
+			parsedURL, err := url.Parse(urlStr.String)
+			if err != nil {
+				return repository.Paginated[models.Commit]{}, err
+			}
+			commit.Url = parsedURL
+		}
+
+		commit.CreatedAt = commitCreatedAt.Time
+		commit.Repository.CreatedAt = repoCreatedAt.Time
+		commit.Repository.UpdatedAt = repoUpdatedAt.Time
+		commit.Repository.Language = language.String
+
+		commits = append(commits, commit)
+	}
+
+	if rows.Err() != nil {
+		return repository.Paginated[models.Commit]{}, rows.Err()
+	}
+
+	countQuery := squirrel.Select("COUNT(*)").
+		From("commits c").
+		Join("repositories r ON c.repository_id = r.id").
+		Where(squirrel.Eq{"r.full_name": filter.RepositoryName})
+
+	if filter.StartDate != nil && !filter.StartDate.IsZero() {
+		countQuery = countQuery.Where(squirrel.GtOrEq{"c.created_at": *filter.StartDate})
+	}
+
+	if filter.EndDate != nil && !filter.EndDate.IsZero() {
+		countQuery = countQuery.Where(squirrel.LtOrEq{"c.created_at": *filter.EndDate})
+	}
+
+	sqlCount, argsCount, err := countQuery.PlaceholderFormat(squirrel.Dollar).ToSql()
+	if err != nil {
+		return repository.Paginated[models.Commit]{}, err
+	}
+
+	var totalCount int64
+	err = p.conn.QueryRow(ctx, sqlCount, argsCount...).Scan(&totalCount)
+	if err != nil {
+		return repository.Paginated[models.Commit]{}, err
+	}
+
+	return repository.Paginated[models.Commit]{
+		Data:       commits,
+		TotalCount: totalCount,
+		Page:       pagination.Page,
+		PerPage:    pagination.PerPage,
+	}, nil
 }

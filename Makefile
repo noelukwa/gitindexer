@@ -33,3 +33,8 @@ install_swag:
 
 manager-docs: install_swag
 	swag init -g  cmd/manager/main.go -o docs/swagger -ot yaml	
+
+
+
+manager-tests:
+	MANAGER_SERVICE_TEST_DATABASE_URL=

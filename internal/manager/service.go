@@ -34,7 +34,7 @@ type Service struct {
 func NewService(store repository.ManagerStore, cfg *config.ManagerConfig) *Service {
 	return &Service{
 		store:       store,
-		intentsChan: make(chan *events.IntentCommand),
+		intentsChan: make(chan *events.IntentCommand, 1),
 		cfg:         cfg,
 	}
 }
@@ -80,6 +80,7 @@ func (svc *Service) UpdateIntentStatus(ctx context.Context, id uuid.UUID) (*mode
 		return nil, fmt.Errorf("failed to find intent: %w", err)
 	}
 
+	log.Printf("found intent: %v", intent)
 	if intent == nil {
 		return nil, ErrIntentNotFound
 	}
@@ -152,11 +153,6 @@ func (svc *Service) GetIntents(ctx context.Context, filter models.IntentFilter, 
 }
 
 func (svc *Service) GetTopCommitters(ctx context.Context, repoName string, page, perPage int) (repository.Paginated[models.AuthorStats], error) {
-	_, err := svc.store.GetRepo(ctx, repoName)
-	if err != nil {
-		return repository.Paginated[models.AuthorStats]{}, fmt.Errorf("failed to get repository: %w", err)
-	}
-
 	pagination := repository.Pagination{
 		Page:    page,
 		PerPage: perPage,
@@ -173,7 +169,6 @@ func (svc *Service) GetTopCommitters(ctx context.Context, repoName string, page,
 
 	return topCommitters, nil
 }
-
 func (svc *Service) BatchSaveCommits(ctx context.Context, commits []*models.Commit) error {
 	if len(commits) == 0 {
 		return nil
@@ -266,6 +261,7 @@ func (svc *Service) ProcessCommitCommands(ctx context.Context, body []byte) erro
 		if len(command.Payload.Commits) == 0 {
 			return fmt.Errorf("commits are missing in the payload")
 		}
+		log.Printf("new commits payload: %+v\n", command.Payload.Commits)
 		err = svc.BatchSaveCommits(ctx, command.Payload.Commits)
 		if err != nil {
 			return fmt.Errorf("failed to save commits: %w", err)

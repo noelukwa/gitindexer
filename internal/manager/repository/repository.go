@@ -31,5 +31,5 @@ type ManagerStore interface {
 	FindCommits(ctx context.Context, filter models.CommitsFilter, pag Pagination) (Paginated[models.Commit], error)
 	GetTopCommitters(ctx context.Context, repository string, startDate, endDate *time.Time, pagination Pagination) (Paginated[models.AuthorStats], error)
 	SaveManyCommit(ctx context.Context, repoID int64, commit []*models.Commit) error
-	SaveAuthor(ctx context.Context, author models.Author) error
+	SaveAuthor(ctx context.Context, author *models.Author) error
 }

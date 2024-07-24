@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"net/http"
 	"os"
 	"os/signal"
 	"sync"
@@ -20,6 +19,7 @@ import (
 	"github.com/noelukwa/indexer/internal/pkg/config"
 	amqp "github.com/rabbitmq/amqp091-go"
 	"github.com/redis/go-redis/v9"
+	"golang.org/x/oauth2"
 )
 
 const (
@@ -59,18 +59,34 @@ func main() {
 	}
 	defer ch.Close()
 
-	queues := []string{config.RabbitMQConsumeQueue, config.RabbitMQPublishQueue}
-	for _, q := range queues {
-		_, err := ch.QueueDeclare(q, true, false, false, false, nil)
-		if err != nil {
-			log.Fatalf("Failed to declare queue %s: %v", q, err)
-		}
+	cq, err := ch.QueueDeclare(
+		config.RabbitMQConsumeQueue,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Fatalf("Failed to declare consumer queue: %v", err)
+	}
+
+	_, err = ch.QueueDeclare(
+		config.RabbitMQPublishQueue,
+		true,
+		false,
+		false,
+		false,
+		nil,
+	)
+	if err != nil {
+		log.Fatalf("Failed to declare publish queue: %v", err)
 	}
 
 	msgs, err := ch.Consume(
-		config.RabbitMQConsumeQueue,
+		cq.Name,
 		"",
-		false,
+		true,
 		false,
 		false,
 		false,
@@ -83,10 +99,13 @@ func main() {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	hc := &http.Client{
-		Timeout: githubAPITimeout,
-	}
-	ghClient := github.NewClient(hc)
+	ts := oauth2.StaticTokenSource(
+		&oauth2.Token{AccessToken: config.GitHubToken},
+	)
+
+	tc := oauth2.NewClient(ctx, ts)
+
+	ghClient := github.NewClient(tc)
 
 	commitsChan := make(chan *CommitResult, batchSize)
 	repoChan := make(chan *github.Repository, 1)
@@ -101,12 +120,7 @@ func main() {
 			wg.Add(1)
 			go func(d amqp.Delivery) {
 				defer wg.Done()
-				if err := handleMessage(ctx, ghClient, redisClient, commitsChan, repoChan, d.Body); err != nil {
-					log.Printf("Error handling message: %v", err)
-					d.Nack(false, true) // Negative acknowledgement, requeue the message
-				} else {
-					d.Ack(false) // Acknowledge the message
-				}
+				handleMessage(ctx, ghClient, redisClient, commitsChan, repoChan, d.Body)
 			}(d)
 		}
 	}()

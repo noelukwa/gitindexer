@@ -230,6 +230,15 @@ func broadcastIntents(ctx context.Context, ch *amqp.Channel, redisClient *redis.
 
 		if err := publishEvent(ctx, ch, publishQueue, event); err != nil {
 			log.Printf("Failed to publish intent: %v", err)
+			continue
 		}
+
+		// intent.From = time.Now()
+
+		// // Update the intent in Redis
+		// key := fmt.Sprintf("intent:%s:%s", intent.RepoOwner, intent.RepoName)
+		// if err := storeNewIntent(ctx, redisClient, key, intent); err != nil {
+		// 	log.Printf("Failed to update intent after broadcast: %v", err)
+		// }
 	}
 }

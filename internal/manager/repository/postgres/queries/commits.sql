@@ -43,9 +43,9 @@ JOIN authors a ON c.author_id = a.id
 WHERE r.full_name = $1
     AND ($2::timestamptz IS NULL OR c.created_at >= $2)
     AND ($3::timestamptz IS NULL OR c.created_at <= $3)
-    AND ($4::text IS NULL OR a.username = $4)
 ORDER BY c.created_at DESC
-LIMIT $5 OFFSET $6;
+LIMIT $4 OFFSET $5;
+
 
 
 -- name: CountCommits :one
