@@ -3,12 +3,15 @@ package postgres
 import (
 	"context"
 	"embed"
+	"errors"
 	"fmt"
 	"log"
+	"net/url"
 	"time"
 
 	"github.com/Masterminds/squirrel"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgtype"
 	"github.com/jackc/pgx/v5/pgxpool"
 	_ "github.com/jackc/pgx/v5/stdlib"
@@ -25,36 +28,6 @@ type pgStore struct {
 
 //go:embed migrations/*.sql
 var migrations embed.FS
-
-// FindCommits implements repository.ManagerStore.
-func (p *pgStore) FindCommits(ctx context.Context, filter models.CommitsFilter, pag repository.Pagination) (repository.Paginated[models.Commit], error) {
-	panic("unimplemented")
-}
-
-// GetRepo implements repository.ManagerStore.
-func (p *pgStore) GetRepo(ctx context.Context, name string) (*models.Repository, error) {
-	panic("unimplemented")
-}
-
-// GetTopCommitters implements repository.ManagerStore.
-func (p *pgStore) GetTopCommitters(ctx context.Context, repository string, startDate *time.Time, endDate *time.Time, pagination repository.Pagination) (repository.Paginated[models.AuthorStats], error) {
-	panic("unimplemented")
-}
-
-// SaveAuthor implements repository.ManagerStore.
-func (p *pgStore) SaveAuthor(ctx context.Context, author models.Author) error {
-	panic("unimplemented")
-}
-
-// SaveManyCommit implements repository.ManagerStore.
-func (p *pgStore) SaveManyCommit(ctx context.Context, repoID int64, commit []models.Commit) error {
-	panic("unimplemented")
-}
-
-// SaveRepo implements repository.ManagerStore.
-func (p *pgStore) SaveRepo(ctx context.Context, repo *models.Repository) error {
-	panic("unimplemented")
-}
 
 func NewManagerStore(ctx context.Context, connStr string) (repository.ManagerStore, error) {
 	config, err := pgxpool.ParseConfig(connStr)
@@ -264,4 +237,226 @@ func (p *pgStore) FindIntent(ctx context.Context, id uuid.UUID) (*models.Intent,
 		Status:         models.IntentStatus(intent.Status),
 		IsActive:       intent.IsActive,
 	}, nil
+}
+
+func (p *pgStore) SaveManyCommit(ctx context.Context, repoID int64, commits []models.Commit) error {
+	tx, err := p.conn.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+
+	qtx := p.q.WithTx(tx)
+
+	for _, commit := range commits {
+		author, err := qtx.GetAuthor(ctx, commit.Author.ID)
+		if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+			continue
+		}
+
+		if errors.Is(err, pgx.ErrNoRows) {
+			author, err = qtx.SaveAuthor(ctx, sqlc.SaveAuthorParams{
+				ID:       commit.Author.ID,
+				Name:     commit.Author.Name,
+				Email:    commit.Author.Email,
+				Username: commit.Author.Username,
+			})
+			if err != nil {
+				return fmt.Errorf("failed to save author %s: %w", commit.Author.Username, err)
+			}
+		}
+
+		err = qtx.SaveCommit(ctx, sqlc.SaveCommitParams{
+			Hash:         commit.Hash,
+			AuthorID:     author.ID,
+			CreatedAt:    pgtype.Timestamptz{Time: commit.CreatedAt, Valid: true},
+			Message:      commit.Message,
+			RepositoryID: repoID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to save commit %s: %w", commit.Hash, err)
+		}
+	}
+
+	if err := tx.Commit(ctx); err != nil {
+		return fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return nil
+}
+
+func (p *pgStore) SaveRepo(ctx context.Context, repo *models.Repository) error {
+	var createdAt, updatedAt pgtype.Timestamptz
+	createdAt.Time = repo.CreatedAt
+	createdAt.Valid = true
+	updatedAt.Time = repo.UpdatedAt
+	updatedAt.Valid = true
+
+	return p.q.SaveRepo(ctx, sqlc.SaveRepoParams{
+		ID:         repo.ID,
+		Watchers:   int32(repo.Watchers),
+		Stargazers: int32(repo.StarGazers),
+		FullName:   repo.FullName,
+		CreatedAt:  createdAt,
+		UpdatedAt:  updatedAt,
+		Language:   pgtype.Text{String: repo.Language, Valid: true},
+		Forks:      int32(repo.Forks),
+	})
+}
+
+func (p *pgStore) GetRepo(ctx context.Context, name string) (*models.Repository, error) {
+	repo, err := p.q.GetRepo(ctx, name)
+	if err != nil {
+		return nil, err
+	}
+
+	return &models.Repository{
+		ID:         repo.ID,
+		Watchers:   repo.Watchers,
+		StarGazers: repo.Stargazers,
+		FullName:   repo.FullName,
+		CreatedAt:  repo.CreatedAt.Time,
+		UpdatedAt:  repo.UpdatedAt.Time,
+		Language:   repo.Language.String,
+		Forks:      repo.Forks,
+	}, nil
+}
+
+func (p *pgStore) FindCommits(ctx context.Context, filter models.CommitsFilter, pagination repository.Pagination) (repository.Paginated[models.Commit], error) {
+	var startDate, endDate pgtype.Timestamptz
+
+	// Set startDate if filter.StartDate is provided and not zero
+	if filter.StartDate != nil && !filter.StartDate.IsZero() {
+		startDate.Time = *filter.StartDate
+		startDate.Valid = true
+	}
+
+	// Set endDate if filter.EndDate is provided and not zero
+	if filter.EndDate != nil && !filter.EndDate.IsZero() {
+		endDate.Time = *filter.EndDate
+		endDate.Valid = true
+	}
+
+	// Execute the FindCommits query
+	rows, err := p.q.FindCommits(ctx, sqlc.FindCommitsParams{
+		FullName: filter.RepositoryName,
+		Column2:  startDate,
+		Column3:  endDate,
+		Limit:    int32(pagination.PerPage),
+		Offset:   int32((pagination.Page - 1) * pagination.PerPage),
+	})
+	if err != nil {
+		return repository.Paginated[models.Commit]{}, err
+	}
+
+	var commits []models.Commit
+	for _, row := range rows {
+		commits = append(commits, models.Commit{
+			Hash:      row.Hash,
+			Message:   row.Message,
+			Url:       parseURL(row.Url),
+			CreatedAt: row.CreatedAt.Time,
+			Repository: models.Repository{
+				ID:         row.RepoID,
+				Watchers:   row.Watchers,
+				StarGazers: row.Stargazers,
+				FullName:   row.Repository,
+				CreatedAt:  row.RepoCreatedAt.Time,
+				UpdatedAt:  row.RepoUpdatedAt.Time,
+				Language:   row.Language.String,
+				Forks:      row.Forks,
+			},
+			Author: models.Author{
+				ID:       row.AuthorID,
+				Name:     row.AuthorName,
+				Email:    row.AuthorEmail,
+				Username: row.AuthorUsername,
+			},
+		})
+	}
+
+	// Get the total count of commits matching the filter
+	totalCount, err := p.q.CountCommits(ctx, sqlc.CountCommitsParams{
+		FullName: filter.RepositoryName,
+		Column2:  startDate,
+		Column3:  endDate,
+	})
+	if err != nil {
+		return repository.Paginated[models.Commit]{}, err
+	}
+
+	return repository.Paginated[models.Commit]{
+		Data:       commits,
+		TotalCount: totalCount,
+		Page:       pagination.Page,
+		PerPage:    pagination.PerPage,
+	}, nil
+}
+
+func (p *pgStore) GetTopCommitters(ctx context.Context, repo string, startDate, endDate *time.Time, pagination repository.Pagination) (repository.Paginated[models.AuthorStats], error) {
+	var start, end pgtype.Timestamptz
+	if startDate != nil {
+		start.Time = *startDate
+		start.Valid = true
+	}
+	if endDate != nil {
+		end.Time = *endDate
+		end.Valid = true
+	}
+
+	rows, err := p.q.GetTopCommitters(ctx, sqlc.GetTopCommittersParams{
+		FullName: repo,
+		Column2:  start,
+		Column3:  end,
+		Limit:    int32(pagination.PerPage),
+		Offset:   int32((pagination.Page - 1) * pagination.PerPage),
+	})
+	if err != nil {
+		return repository.Paginated[models.AuthorStats]{}, err
+	}
+
+	var stats []models.AuthorStats
+	for _, row := range rows {
+		stats = append(stats, models.AuthorStats{
+			Author: models.Author{
+				ID:       row.ID,
+				Name:     row.Name,
+				Email:    row.Email,
+				Username: row.Username,
+			},
+			Commits: row.CommitCount,
+		})
+	}
+
+	return repository.Paginated[models.AuthorStats]{
+		Data:       stats,
+		TotalCount: int64(len(stats)),
+		Page:       pagination.Page,
+		PerPage:    pagination.PerPage,
+	}, nil
+}
+func (p *pgStore) SaveAuthor(ctx context.Context, author models.Author) error {
+	_, err := p.q.SaveAuthor(ctx, sqlc.SaveAuthorParams{
+		ID:       author.ID,
+		Name:     author.Name,
+		Email:    author.Email,
+		Username: author.Username,
+	})
+	return err
+}
+
+func stringOrNull(str *string) string {
+	if str == nil {
+		return ""
+	}
+	return *str
+}
+
+func parseURL(rawURL pgtype.Text) *url.URL {
+
+	if rawURL.Valid {
+		u, _ := url.Parse(rawURL.String)
+		return u
+	}
+	return nil
 }

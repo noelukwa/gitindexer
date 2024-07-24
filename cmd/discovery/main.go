@@ -80,13 +80,6 @@ func getAllEvents(ctx context.Context, redisClient *redis.Client) ([]*events.New
 	return found, nil
 }
 
-func clearEvents(ctx context.Context, redisClient *redis.Client) {
-	keys, _ := redisClient.Keys(ctx, "event:*").Result()
-	for _, key := range keys {
-		redisClient.Del(ctx, key)
-	}
-}
-
 func publishEvent(ctx context.Context, ch *amqp.Channel, queueName string, event *events.NewIntent) error {
 	body, err := json.Marshal(event)
 	if err != nil {
@@ -177,7 +170,6 @@ func main() {
 	ticker := time.NewTicker(config.BroadcastInterval)
 	go func() {
 		for range ticker.C {
-
 			broadcastEvents(ctx, ch, redisClient, config.RabbitMQPublishQueue)
 		}
 	}()
@@ -206,7 +198,6 @@ func processMessage(ctx context.Context, redisClient *redis.Client, body []byte)
 }
 
 func broadcastEvents(ctx context.Context, ch *amqp.Channel, redisClient *redis.Client, publishQueue string) {
-	fmt.Println("tik....")
 	events, err := getAllEvents(ctx, redisClient)
 	if err != nil {
 		log.Printf("Failed to get all events: %v", err)
@@ -216,11 +207,11 @@ func broadcastEvents(ctx context.Context, ch *amqp.Channel, redisClient *redis.C
 	fmt.Println(events)
 
 	for _, event := range events {
+
 		err := publishEvent(ctx, ch, publishQueue, event)
 		if err != nil {
 			log.Printf("Failed to publish event: %v", err)
 		}
-	}
 
-	clearEvents(ctx, redisClient)
+	}
 }
