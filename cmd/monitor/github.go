@@ -9,7 +9,7 @@ import (
 	"github.com/noelukwa/indexer/internal/events"
 )
 
-func fetchCommits(ctx context.Context, client *github.Client, resolverChannel chan<- *github.RepositoryCommit, ev *events.NewIntent, wg *sync.WaitGroup) {
+func fetchCommits(ctx context.Context, client *github.Client, resolverChannel chan<- *github.RepositoryCommit, ev *events.IntentPayload, wg *sync.WaitGroup) {
 	defer wg.Done()
 	log.Println("fetching commits")
 	opts := &github.CommitsListOptions{

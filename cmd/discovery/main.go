@@ -18,8 +18,8 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
-func parseEvent(data []byte) (*events.NewIntent, error) {
-	var event events.NewIntent
+func parseEvent(data []byte) (*events.IntentCommand, error) {
+	var event events.IntentCommand
 	err := json.Unmarshal(data, &event)
 	if err != nil {
 		return nil, err
@@ -27,66 +27,84 @@ func parseEvent(data []byte) (*events.NewIntent, error) {
 	return &event, nil
 }
 
-func storeEvent(ctx context.Context, redisClient *redis.Client, event *events.NewIntent) {
-	key := "event:" + event.RepoOwner + event.RepoName
-	existingEvent, err := redisClient.Get(ctx, key).Result()
-	if err == redis.Nil || isNewEventValid(existingEvent, event) {
-		eventData, _ := json.Marshal(event)
-		redisClient.Set(ctx, key, eventData, 0)
+func processIntent(ctx context.Context, redisClient *redis.Client, event *events.IntentCommand) error {
+	key := fmt.Sprintf("intent:%s:%s", event.Intent.RepoOwner, event.Intent.RepoName)
+
+	switch event.Kind {
+	case events.NewIntentKind:
+		return storeNewIntent(ctx, redisClient, key, event.Intent)
+	case events.UpdateIntentKind:
+		return updateIntent(ctx, redisClient, key, event.Intent)
+	case events.CancelIntentKind:
+		return cancelIntent(ctx, redisClient, key)
+	default:
+		return fmt.Errorf("unknown intent kind: %s", event.Kind)
 	}
 }
 
-func isNewEventValid(existingEventData string, newEvent *events.NewIntent) bool {
-	if existingEventData == "" {
-		return true
-	}
-
-	var existingEvent *events.NewIntent
-	err := json.Unmarshal([]byte(existingEventData), &existingEvent)
+func storeNewIntent(ctx context.Context, redisClient *redis.Client, key string, intent *events.IntentPayload) error {
+	intentData, err := json.Marshal(intent)
 	if err != nil {
-		return false
+		return err
+	}
+	return redisClient.Set(ctx, key, intentData, 0).Err()
+}
+
+func updateIntent(ctx context.Context, redisClient *redis.Client, key string, updatedIntent *events.IntentPayload) error {
+	existingIntentData, err := redisClient.Get(ctx, key).Result()
+	if err == redis.Nil {
+		return storeNewIntent(ctx, redisClient, key, updatedIntent)
+	} else if err != nil {
+		return err
 	}
 
-	return !isOverlap(existingEvent.From, existingEvent.Until, newEvent.From, newEvent.Until)
+	var existingIntent events.IntentPayload
+	if err := json.Unmarshal([]byte(existingIntentData), &existingIntent); err != nil {
+		return err
+	}
+
+	existingIntent.From = updatedIntent.From
+	existingIntent.Until = updatedIntent.Until
+
+	return storeNewIntent(ctx, redisClient, key, &existingIntent)
 }
 
-func isOverlap(start1, end1, start2, end2 time.Time) bool {
-	return start1.Before(end2) && start2.Before(end1)
+func cancelIntent(ctx context.Context, redisClient *redis.Client, key string) error {
+	return redisClient.Del(ctx, key).Err()
 }
 
-func getAllEvents(ctx context.Context, redisClient *redis.Client) ([]*events.NewIntent, error) {
-	var found []*events.NewIntent
+func getAllIntents(ctx context.Context, redisClient *redis.Client) ([]*events.IntentPayload, error) {
+	var intents []*events.IntentPayload
 
-	keys, err := redisClient.Keys(ctx, "event:*").Result()
+	keys, err := redisClient.Keys(ctx, "intent:*").Result()
 	if err != nil {
 		return nil, err
 	}
 
 	for _, key := range keys {
-		eventData, err := redisClient.Get(ctx, key).Result()
+		intentData, err := redisClient.Get(ctx, key).Result()
 		if err != nil {
 			return nil, err
 		}
 
-		event := events.NewIntent{}
-		err = json.Unmarshal([]byte(eventData), &event)
-		if err != nil {
+		intent := &events.IntentPayload{}
+		if err := json.Unmarshal([]byte(intentData), intent); err != nil {
 			return nil, err
 		}
 
-		found = append(found, &event)
+		intents = append(intents, intent)
 	}
 
-	return found, nil
+	return intents, nil
 }
 
-func publishEvent(ctx context.Context, ch *amqp.Channel, queueName string, event *events.NewIntent) error {
+func publishEvent(ctx context.Context, ch *amqp.Channel, queueName string, event *events.IntentCommand) error {
 	body, err := json.Marshal(event)
 	if err != nil {
 		return err
 	}
 
-	err = ch.PublishWithContext(ctx,
+	return ch.PublishWithContext(ctx,
 		"",
 		queueName,
 		false,
@@ -95,7 +113,6 @@ func publishEvent(ctx context.Context, ch *amqp.Channel, queueName string, event
 			ContentType: "application/json",
 			Body:        body,
 		})
-	return err
 }
 
 func main() {
@@ -170,7 +187,7 @@ func main() {
 	ticker := time.NewTicker(config.BroadcastInterval)
 	go func() {
 		for range ticker.C {
-			broadcastEvents(ctx, ch, redisClient, config.RabbitMQPublishQueue)
+			broadcastIntents(ctx, ch, redisClient, config.RabbitMQPublishQueue)
 		}
 	}()
 
@@ -185,33 +202,35 @@ func main() {
 }
 
 func processMessage(ctx context.Context, redisClient *redis.Client, body []byte) {
-	log.Println("recieved message.")
+	log.Println("received message.")
 	event, err := parseEvent(body)
 	if err != nil {
 		log.Printf("Failed to parse event: %v", err)
 		return
 	}
 
-	log.Printf("recieved event: %v", event)
+	log.Printf("received event: %v", event)
 
-	storeEvent(ctx, redisClient, event)
+	if err := processIntent(ctx, redisClient, event); err != nil {
+		log.Printf("Failed to process intent: %v", err)
+	}
 }
 
-func broadcastEvents(ctx context.Context, ch *amqp.Channel, redisClient *redis.Client, publishQueue string) {
-	events, err := getAllEvents(ctx, redisClient)
+func broadcastIntents(ctx context.Context, ch *amqp.Channel, redisClient *redis.Client, publishQueue string) {
+	intents, err := getAllIntents(ctx, redisClient)
 	if err != nil {
-		log.Printf("Failed to get all events: %v", err)
+		log.Printf("Failed to get all intents: %v", err)
 		return
 	}
 
-	fmt.Println(events)
-
-	for _, event := range events {
-
-		err := publishEvent(ctx, ch, publishQueue, event)
-		if err != nil {
-			log.Printf("Failed to publish event: %v", err)
+	for _, intent := range intents {
+		event := &events.IntentCommand{
+			Kind:   events.NewIntentKind,
+			Intent: intent,
 		}
 
+		if err := publishEvent(ctx, ch, publishQueue, event); err != nil {
+			log.Printf("Failed to publish intent: %v", err)
+		}
 	}
 }

@@ -6,8 +6,8 @@ import (
 	"github.com/noelukwa/indexer/internal/events"
 )
 
-func parseEvent(data []byte) (*events.NewIntent, error) {
-	var event events.NewIntent
+func parseEvent(data []byte) (*events.IntentPayload, error) {
+	var event events.IntentPayload
 	err := json.Unmarshal(data, &event)
 	if err != nil {
 		return nil, err

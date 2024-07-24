@@ -68,43 +68,11 @@ func (svc *Service) CreateIntent(ctx context.Context, repoName string, startDate
 }
 
 func (svc *Service) UpdateIntentStatus(ctx context.Context, id uuid.UUID, status bool) error {
-	// intent, err := svc.store.FindIntent(ctx, id)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// if update.StartDate != nil {
-	// 	if err := validateStartDate(*update.StartDate); err != nil {
-	// 		return err
-	// 	}
-	// 	intent.StartDate = *update.StartDate
-	// }
-
-	// if update.IsActive != nil {
-	// 	intent.IsActive = *update.IsActive
-	// }
-
-	// if update.Status != nil {
-	// 	intent.Status = *update.Status
-	// }
-
-	// return svc.store.UpdateIntent(ctx, models.IntentUpdate{
-	// 	Status:    &intent.Status,
-	// 	IsActive:  &intent.IsActive,
-	// 	StartDate: &intent.StartDate,
-	// })
 
 	return nil
 }
 
 func (svc *Service) ResetIntentStartDate(ctx context.Context, id uuid.UUID, newDate time.Time) error {
-	// intent, err := svc.store.FindIntent(ctx, id)
-	// if err != nil {
-	// 	return err
-	// }
-	// if err := validateStartDate(newDate); err != nil {
-	// 	return err
-	// }
 
 	return nil
 }
@@ -232,7 +200,8 @@ func (svc *Service) StartBroadCast(ctx context.Context, ch *amqp.Channel) error 
 			}
 			parts := strings.Split(v.RepositoryName, "/")
 
-			body, err := json.Marshal(events.NewIntent{
+			// make this and IntentCommand
+			body, err := json.Marshal(events.IntentPayload{
 				RepoOwner: parts[0],
 				RepoName:  parts[1],
 				Until:     v.Until,
